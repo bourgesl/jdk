@@ -1,12 +1,13 @@
 package sun.java2d.pipe;
 
-import sun.java2d.opengl.OGLRenderQueue;
-
 import java.util.Collection;
 
+import java.security.AccessController;
+import sun.security.action.GetPropertyAction;
+
 public abstract class DoubleBufferedRenderQueue implements RenderQueue {
-  RenderQueue nativeRenderQueue;
-  RenderQueue javaRenderQueue;
+  private volatile RenderQueue nativeRenderQueue;
+  private volatile RenderQueue javaRenderQueue;
 
   public DoubleBufferedRenderQueue() {
     nativeRenderQueue = createRenderQueueImpl();
@@ -46,15 +47,44 @@ public abstract class DoubleBufferedRenderQueue implements RenderQueue {
   }
 
   public void flushNow(int position, boolean sync) {
-    Thread.dumpStack();
     javaRenderQueue.getBuffer().position(position);
     flushNow(sync);
   }
 
   public void togglePipelines() {
-    RenderQueue tmp = nativeRenderQueue;
+    final RenderQueue tmp = nativeRenderQueue;
     nativeRenderQueue = javaRenderQueue;
     javaRenderQueue = tmp;
   }
 
+
+    // system property utilities
+    public static int getInteger(final String key, final int def,
+                                 final int min, final int max)
+    {
+        final String property = AccessController.doPrivileged(
+                                    new GetPropertyAction(key));
+
+        int value = def;
+        if (property != null) {
+            try {
+                value = Integer.decode(property);
+            } catch (NumberFormatException e) {
+                System.out.println("Invalid integer value for " + key + " = " + property);
+            }
+        }
+
+        // check for invalid values
+        if ((value < min) || (value > max)) {
+            System.out.println("Invalid value for " + key + " = " + value
+                    + "; expected value in range[" + min + ", " + max + "] !");
+            value = def;
+        }
+        return value;
+    }
+
+    protected static int align(final int val, final int norm) {
+        final int ceil = (int)Math.ceil( ((float) val) / norm);
+        return ceil * norm;
+    }
 }

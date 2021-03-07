@@ -74,26 +74,33 @@ import sun.awt.SunToolkit;
 public abstract class RenderQueueImpl implements RenderQueue {
 
     /** The size of the underlying buffer, in bytes. */
-    private static final int BUFFER_SIZE = 32768;
+    private static final int BUFFER_SIZE;
+
+    static {
+        // 1M instead of 32K (D3D / OGL) for high-end GPU
+        BUFFER_SIZE = DoubleBufferedRenderQueue.align(
+            DoubleBufferedRenderQueue.getInteger("sun.java2d.render.bufferSize", 256 * 1024, 32 * 1024, 16 * 1024 * 1024), 1024); // 32 * 1024
+
+        System.out.println("RenderQueueImpl: sun.java2d.render.bufferSize = " + BUFFER_SIZE);
+    }
 
     /** The underlying buffer for this queue. */
-    protected RenderBuffer buf;
+    protected final RenderBuffer buf;
 
     /**
      * A Set containing hard references to Objects that must stay alive until
      * the queue has been completely flushed.
      */
-    protected Set<Object> refSet;
+    protected final Set<Object> refSet;
 
     protected RenderQueueImpl() {
-      refSet = new HashSet<>();
       buf = RenderBuffer.allocate(BUFFER_SIZE);
+      refSet = new HashSet<>(64);
     }
 
   @Override
   public Collection<Object> copyAndClearReferences() {
-    ArrayList<Object> refList = new ArrayList<>(refSet.size());
-    refList.addAll(refSet);
+    final ArrayList<Object> refList = new ArrayList<>(refSet);
     refSet.clear();
     return refList;
   }
@@ -132,11 +139,6 @@ public abstract class RenderQueueImpl implements RenderQueue {
         if (buf.remaining() < opsize) {
             flushNow(false);
         }
-
-        /*if(buf.position() > 32000) {
-          System.out.println("Flushing with position: " + buf.position());
-          flushNow(false);
-        }*/
     }
 
     /**
@@ -177,7 +179,6 @@ public abstract class RenderQueueImpl implements RenderQueue {
      * has added data to the queue and needs to flush immediately.
      */
     public void flushNow(int position, boolean sync) {
-      Thread.dumpStack();
         buf.position(position);
         flushNow(sync);
     }

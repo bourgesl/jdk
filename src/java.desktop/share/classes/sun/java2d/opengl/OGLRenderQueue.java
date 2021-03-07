@@ -46,6 +46,11 @@ import java.util.concurrent.locks.ReentrantLock;
  * OpenGL libraries for the entire process.
  */
 public class OGLRenderQueue extends DoubleBufferedRenderQueue {
+    final static long FLUSH_DELAY = getInteger("sun.java2d.opengl.flushDelay", 100, 1, 1000);
+
+    static {
+        System.out.println("RenderQueue: sun.java2d.opengl.flushDelay = " + FLUSH_DELAY);
+    }
 
     private static OGLRenderQueue theInstance;
     private final QueueFlusher flusher;
@@ -161,16 +166,15 @@ public class OGLRenderQueue extends DoubleBufferedRenderQueue {
     private native void flushBuffer(long buf, int limit);
 
     private class QueueFlusher implements Runnable {
-        private boolean needsFlush;
-        private boolean sync;
-        private Runnable task;
-        private Error error;
+        private volatile boolean needsFlush;
+        private volatile boolean sync;
+        private volatile Runnable task;
+        private volatile Error error;
         private final Thread thread;
 
         private final ReentrantLock lock = new ReentrantLock();
         private final Condition flushRequested = lock.newCondition();
         private final Condition flushDone = lock.newCondition();
-       //  private final Condition condition = lock.newCondition();
 
         public QueueFlusher() {
             String name = "Java2D Queue Flusher";
@@ -189,6 +193,8 @@ public class OGLRenderQueue extends DoubleBufferedRenderQueue {
               // wake up the flusher
               needsFlush = true;
               this.sync = sync;
+              
+              // System.out.print(sync ? 'S' : 'F');
 
          //     System.out.println("Queuing flush for: " + getBuffer().getAddress() +" pos: "+getBuffer().position());
 
@@ -208,17 +214,19 @@ public class OGLRenderQueue extends DoubleBufferedRenderQueue {
                 }
               }
 
-            }finally {
+            } finally {
               lock.unlock();
             }
             // re-throw any error that may have occurred during the flush
-         /*   if (error != null) {
+            if (error != null) {
                 throw error;
             }
-            */
         }
 
         public void flushAndInvokeNow(Runnable task) {
+            if (this.task != null) {
+                System.err.println("flushAndInvokeNow: task pending ? " + this.task + " overwritten by :" + task);
+            }
             this.task = task;
             flushNow(true);
         }
@@ -227,7 +235,7 @@ public class OGLRenderQueue extends DoubleBufferedRenderQueue {
             boolean rqLock = false;
 
             while (true) {
-              lock.lock();
+                lock.lock();
                 while (!needsFlush) {
                     try {
                       rqLock = false;
@@ -247,8 +255,8 @@ public class OGLRenderQueue extends DoubleBufferedRenderQueue {
                         }
                       }*/
 
-                      if(wait) {
-                        flushRequested.await(250, TimeUnit.MILLISECONDS);
+                      if (wait) {
+                        flushRequested.await(FLUSH_DELAY, TimeUnit.MILLISECONDS); // 250 ?
                       }
 
                     //  flushRequested.await();
@@ -264,17 +272,18 @@ public class OGLRenderQueue extends DoubleBufferedRenderQueue {
                         if (!needsFlush && (rqLock || (rqLock = tryLock()))) {
                             if (getBuffer().position() > 0) {
                                 needsFlush = true;
+// LBO: not very clear ?
                                 sync = false;
                             } else {
-                                unlock();
+                                unlock(); // LBO: why ?
                             }
                         }
                     } catch (InterruptedException e) {
                     }
                 }
                 boolean lockHeld = true;
+                Collection<Object> refs = null;
                 try {
-                  {
                     RenderBuffer buf = getBuffer();
                     // assert lock.isHeldByCurrentThread();
                     int bufferPosition = buf.position();
@@ -283,7 +292,7 @@ public class OGLRenderQueue extends DoubleBufferedRenderQueue {
                     buf.clear();
 
                     // will go out of scope after native flushBuffer is done
-                    Collection<Object> refs = copyAndClearReferences();
+                    refs = copyAndClearReferences();
 
                     togglePipelines();
 
@@ -304,22 +313,23 @@ public class OGLRenderQueue extends DoubleBufferedRenderQueue {
 
                     if (bufferPosition > 0) {
                       // process the queue
+                      // System.out.print(sync ? 's' : 'f');
+
                       //System.out.println("Flushing Buffer " + bufferAddress+" length: " + bufferPosition+" sync: "+sync);
                       flushBuffer(bufferAddress, bufferPosition);
                     }
 
                     if (!sync) {
-                      if (task != null) {
-                        System.out.println("Task is null during async!");
+                      if (this.task != null) {
+                        System.out.println("Task is not null during async!");
                       }
-                      // assert task == null;
+                      // assert this.task == null;
                     } else {
                       // if there's a task, invoke that now as well
-                      if (task != null) {
-                        task.run();
+                      if (this.task != null) {
+                        this.task.run();
                       }
                     }
-                  }
                 } catch (Error e) {
                     error = e;
                 } catch (Exception x) {
@@ -330,15 +340,16 @@ public class OGLRenderQueue extends DoubleBufferedRenderQueue {
                         unlock();
                     }
 
-                    task = null;
+                    refs.clear(); // to keep refs alive
+                    this.task = null;
 
-                  if(lockHeld) {
-                    // allow the waiting thread to continue
-                    needsFlush = false;
-                    flushDone.signal();
-                    //condition.signal();
-                    lock.unlock();
-                  }
+                    if (lockHeld) {
+                        // allow the waiting thread to continue
+                        needsFlush = false;
+                        flushDone.signal();
+                        //condition.signal();
+                        lock.unlock();
+                   }
                 }
             }
         }
